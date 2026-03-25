@@ -14,6 +14,20 @@ PRESSURE_GAUGE = Gauge('mkr_env_pressure', 'Pressure')
 start_http_server(8000)
 print('[PROMETHEUS] Exporter started on port 8000')
 
+# Buffers for averaging data
+data_buffers = {
+    'temperature': [],
+    'humidity': [],
+    'light': [],
+    'uva': [],
+    'uvb': [],
+    'uv_index': [],
+    'pressure': []
+}
+
+PUSH_INTERVAL = 60  # Push to Prometheus every 60 seconds
+last_push_time = time.time()
+
 def connect_serial():
     while True:
         try:
@@ -28,6 +42,8 @@ def connect_serial():
 ser = connect_serial()
 while True:
     try:
+        current_time = time.time()
+        
         if ser.in_waiting > 0:
             line = ser.readline().decode('utf-8', errors='ignore').strip()
             if line == "TIME_REQUEST":
@@ -38,16 +54,37 @@ while True:
                 data = json.loads(line)
                 print(f"[MKR_ENV] Received data: {data}")
 
-                TEMP_GAUGE.set(data.get('temperature', 0))
-                HUM_GAUGE.set(data.get('humidity', 0))
-                LIGHT_GAUGE.set(data.get('light', 0))
-                UVA_GAUGE.set(data.get('uva', 0))
-                UVB_GAUGE.set(data.get('uvb', 0))
-                UV_INDEX_GAUGE.set(data.get('uv_index', 0))
-                PRESSURE_GAUGE.set(data.get('pressure', 0))
-                print('[PROMETHEUS] Metrics updated.')
+                # Buffer the data instead of pushing immediately
+                data_buffers['temperature'].append(data.get('temperature', 0))
+                data_buffers['humidity'].append(data.get('humidity', 0))
+                data_buffers['light'].append(data.get('light', 0))
+                data_buffers['uva'].append(data.get('uva', 0))
+                data_buffers['uvb'].append(data.get('uvb', 0))
+                data_buffers['uv_index'].append(data.get('uv_index', 0))
+                data_buffers['pressure'].append(data.get('pressure', 0))
+                
             except json.JSONDecodeError:
                 print(f"[MKR_ENV] Invalid JSON: {line}")
+        
+        # Push to Prometheus every PUSH_INTERVAL seconds
+        if current_time - last_push_time >= PUSH_INTERVAL:
+            if any(data_buffers.values()):  # Only push if we have data
+                # Calculate averages
+                TEMP_GAUGE.set(sum(data_buffers['temperature']) / len(data_buffers['temperature']) if data_buffers['temperature'] else 0)
+                HUM_GAUGE.set(sum(data_buffers['humidity']) / len(data_buffers['humidity']) if data_buffers['humidity'] else 0)
+                LIGHT_GAUGE.set(sum(data_buffers['light']) / len(data_buffers['light']) if data_buffers['light'] else 0)
+                UVA_GAUGE.set(sum(data_buffers['uva']) / len(data_buffers['uva']) if data_buffers['uva'] else 0)
+                UVB_GAUGE.set(sum(data_buffers['uvb']) / len(data_buffers['uvb']) if data_buffers['uvb'] else 0)
+                UV_INDEX_GAUGE.set(sum(data_buffers['uv_index']) / len(data_buffers['uv_index']) if data_buffers['uv_index'] else 0)
+                PRESSURE_GAUGE.set(sum(data_buffers['pressure']) / len(data_buffers['pressure']) if data_buffers['pressure'] else 0)
+                
+                print(f'[PROMETHEUS] Metrics updated with averages from {sum(len(v) for v in data_buffers.values()) // 7} data points.')
+                
+                # Clear buffers for next interval
+                for key in data_buffers:
+                    data_buffers[key] = []
+            
+            last_push_time = current_time
             
     except (OSError, serial.SerialException) as e:
         print(f"Connection lost: {e}")
